@@ -1,96 +1,174 @@
-from pathlib import Path
-import re
-import unicodedata
-
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import streamlit as st
-
-# =========================================================
-# PAGE
-# =========================================================
-st.set_page_config(
-    page_title="Africa Sales Performance",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-DATA_DIR = Path("data")
-
-# =========================================================
-# DESIGN
-# =========================================================
-BG = "#D7C9AE"
-CARD = "#F2EFE8"
-SIDEBAR = "#2E3033"
-TEXT = "#22262D"
-MUTED = "#6B6B67"
-ACCENT = "#F28C45"
-BAR = "#3D3F42"
-GRID = "#DDD7CB"
-
-st.markdown(
-    f"""
-    <style>
-      .stApp {{ background: {BG}; color: {TEXT}; }}
-      [data-testid="stSidebar"] {{ background: {SIDEBAR}; }}
-      [data-testid="stSidebar"] * {{ color: #F7F7F7; }}
-      [data-testid="stSidebar"] input {{ color: {TEXT} !important; }}
-      [data-testid="stSidebar"] [data-baseweb="select"] * {{ color: {TEXT}; }}
-      [data-testid="stSidebar"] hr {{ border-color: rgba(255,255,255,.18); }}
-      .block-container {{ padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1500px; }}
-      .hero {{
-          background: linear-gradient(135deg, rgba(255,255,255,.27), rgba(255,255,255,.08));
-          border: 1px solid rgba(255,255,255,.30);
-          border-radius: 22px;
-          padding: 18px 22px 10px 22px;
-          margin-bottom: 12px;
-      }}
-      .hero h1 {{ margin: 0; font-size: 2rem; font-weight: 650; letter-spacing: -.02em; }}
-      .hero p {{ margin: 2px 0 0 0; font-size: 1.06rem; font-style: italic; }}
-      .kpi-card {{
-          background: {CARD};
-          border: 1px solid rgba(80,80,80,.10);
-          border-radius: 16px;
-          padding: 14px 14px 11px 14px;
-          min-height: 116px;
-          box-shadow: 0 1px 0 rgba(0,0,0,.02);
-      }}
-      .kpi-value {{ font-size: 1.72rem; font-weight: 650; line-height: 1.05; color: {TEXT}; }}
-      .kpi-label {{ font-size: .88rem; color: #4F514F; margin-top: 5px; }}
-      .kpi-delta {{ font-size: .76rem; color: {ACCENT}; margin-top: 7px; }}
-      div[data-testid="stVerticalBlockBorderWrapper"] {{
-          background: rgba(242,239,232,.90);
-          border-radius: 16px;
-          border-color: rgba(80,80,80,.12) !important;
-      }}
-      .small-note {{ color: {MUTED}; font-size: .80rem; }}
-      .brand {{ font-size: 1.35rem; font-weight: 750; letter-spacing: .03em; }}
-      .brand-sub {{ font-size: .83rem; opacity: .72; margin-top: -4px; }}
-      .sidebar-section {{ font-weight: 650; font-size: .93rem; margin-top: .55rem; }}
-      .data-note {{
-          background: rgba(255,255,255,.25); border-radius: 12px; padding: 10px 12px;
-          font-size: .82rem; color: #444;
-      }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# =========================================================
-# NORMALIZATION
-# =========================================================
-def clean_text(value):
-    if pd.isna(value):
-        return ""
-    text = unicodedata.normalize("NFKC", str(value)).strip()
-    text = re.sub(r"\s+", " ", text)
-    return text
+                title="Monthly Trend — Top Reagents",
+                labels={"Sales_USD": "Sales (USD)", "Reagent_Name": "Reagent"},
+            )
+            chart_or_info(fig)
 
 
-def numeric_series(series):
-    text = series.astype("string").fillna("")
-    text = text.str.replace(",", "", regex=False).str.replace("(", "-", regex=False).str.replace(")", "", regex=False)
-    return pd.to_numeric(text, errors="coerce").fillna(0.0)
+# -------------------------
+# Installed base
+# -------------------------
+with tab_installed:
+    st.caption(
+        f"2018-01-01부터 {year_end}-12-31까지 누적. 매출 0인 FOC Analyzer도 수량에 포함합니다."
+    )
+
+    model_options = sorted(
+        m for m in installed_df["Device_Model"].dropna().unique().tolist() if m
+    )
+    selected_models = st.multiselect(
+        "기기 모델",
+        options=model_options,
+        default=[],
+        placeholder="선택 없으면 전체 모델",
+        key="installed_model_filter",
+    )
+
+    ib = installed_df.copy()
+    if selected_models:
+        ib = ib[ib["Device_Model"].isin(selected_models)]
+
+    snapshot = (
+        ib.pivot_table(
+            index="Country",
+            columns="Device_Model",
+            values="Device_Units",
+            aggfunc="sum",
+            fill_value=0,
+        )
+        .sort_index()
+    )
+
+    if not snapshot.empty:
+        snapshot["Total"] = snapshot.sum(axis=1)
+        snapshot = snapshot.sort_values("Total", ascending=False)
+
+    st.subheader(f"Cumulative Device Units by Country — through {year_end}")
+    st.dataframe(
+        snapshot,
+        use_container_width=True,
+        column_config={
+            c: st.column_config.NumberColumn(format="%,.0f")
+            for c in snapshot.columns
+        } if not snapshot.empty else None,
+    )
+
+    monthly_units = (
+        ib.groupby(["Month", "Device_Model"], as_index=False)["Device_Units"]
+        .sum()
+        .sort_values("Month")
+    )
+
+    if not monthly_units.empty:
+        full_months = pd.date_range(
+            start=f"{START_YEAR}-01-01",
+            end=end_date,
+            freq="MS",
+        )
+        models = sorted(monthly_units["Device_Model"].dropna().unique())
+        full_idx = pd.MultiIndex.from_product(
+            [full_months, models], names=["Month", "Device_Model"]
+        )
+        cumulative = (
+            monthly_units.set_index(["Month", "Device_Model"])
+            .reindex(full_idx, fill_value=0)
+            .reset_index()
+            .sort_values(["Device_Model", "Month"])
+        )
+        cumulative["Cumulative_Units"] = cumulative.groupby("Device_Model")[
+            "Device_Units"
+        ].cumsum()
+
+        fig = px.line(
+            cumulative,
+            x="Month",
+            y="Cumulative_Units",
+            color="Device_Model",
+            title="Cumulative Analyzer Installed Base",
+            labels={"Cumulative_Units": "Cumulative Units", "Device_Model": "Model"},
+        )
+        chart_or_info(fig)
+
+    st.subheader("Country → Company → Model")
+    company_device = (
+        ib.groupby(["Country", "Company", "Device_Model"], as_index=False)
+        .agg(
+            Cumulative_Units=("Device_Units", "sum"),
+            FOC_Units=(
+                "Device_Units",
+                lambda s: s[ib.loc[s.index, "Is_FOC"]].sum()
+                if len(s.index) else 0
+            ),
+        )
+        .sort_values(["Country", "Company", "Cumulative_Units"], ascending=[True, True, False])
+    )
+    st.dataframe(
+        company_device,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Cumulative_Units": st.column_config.NumberColumn(format="%,.0f"),
+            "FOC_Units": st.column_config.NumberColumn(format="%,.0f"),
+        },
+    )
+
+
+# -------------------------
+# Raw data
+# -------------------------
+with tab_raw:
+    raw_cols = [
+        "Date",
+        "Country",
+        "Company",
+        "Department",
+        "Salesperson",
+        "Product_Name",
+        "Product_Code",
+        "Item_Group",
+        "Device_Model",
+        "Reagent_Name",
+        "Currency",
+        "FX_Rate",
+        "USD_KRW_Rate",
+        "Sales_USD",
+        "Quantity",
+        "Net_Quantity",
+        "Is_FOC",
+        "Is_Return",
+        "Source_File",
+    ]
+    raw_view = period_df[raw_cols].sort_values("Date", ascending=False)
+
+    st.dataframe(
+        raw_view,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
+            "Sales_USD": st.column_config.NumberColumn(format="$%,.2f"),
+            "FX_Rate": st.column_config.NumberColumn(format="%,.2f"),
+            "USD_KRW_Rate": st.column_config.NumberColumn(format="%,.2f"),
+            "Quantity": st.column_config.NumberColumn(format="%,.2f"),
+            "Net_Quantity": st.column_config.NumberColumn(format="%,.2f"),
+        },
+    )
+
+    csv = raw_view.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "Filtered data CSV 다운로드",
+        data=csv,
+        file_name=f"sales_dashboard_{year_start}_{year_end}.csv",
+        mime="text/csv",
+    )
+
+    with st.expander("USD 환산 / 데이터 품질 확인"):
+        fx_coverage = period_df["USD_KRW_Rate"].notna().mean() if len(period_df) else 0
+        unknown_country = (period_df["Country"] == "Unknown").sum()
+        unmapped_product = (period_df["Item_Group"] == "Other").sum()
+        st.write(f"- USD/KRW 환율 커버리지: {fx_coverage:.1%}")
+        st.write(f"- 국가 미분류 행: {unknown_country:,}")
+        st.write(f"- Device/Reagent 외 Other 행: {unmapped_product:,}")
+        st.write(
+            "- 국가/회사명이 예외적인 경우 `config/company_country_map.csv`, "
+            "신규 기기명이 생기면 `config/device_model_aliases.csv`에 추가하면 됩니다."
+        )
